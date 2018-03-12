@@ -5,7 +5,7 @@
 
 import argparse
 import csv
-import codecs
+import binascii
 import os
 import sys
 from typing import Tuple
@@ -26,7 +26,7 @@ def get_obfuscate_key(conn: leveldb.LevelDB) -> bytearray:
     return secret[1:]
 
 
-def decrypt(ciphertext, key):
+def decrypt(ciphertext: bytearray, key: bytearray):
     """Decrypt data using an XOR cipher."""
     for i, c in enumerate(ciphertext):
         ciphertext[i] = c ^ key[i % len(key)]
@@ -41,6 +41,7 @@ def decode_varint(val: bytearray) -> Tuple[int, int]:
             n += 1
         else:
             return n, i + 1
+    assert False  # not reached
 
 
 def decompress_amount(x: int) -> int:
@@ -66,7 +67,7 @@ def decompress_amount(x: int) -> int:
 def decode_key(key: bytearray) -> Tuple[str, int]:
     """Decode key to (txid, vout)."""
     assert key[0] == COIN
-    txid = codecs.encode(key[1:33][::-1], 'hex').decode('utf8')
+    txid = binascii.hexlify(key[1:33][::-1]).decode('utf8')
     compressed_vout = key[33:]
     vout, declen = decode_varint(compressed_vout)
     assert declen == len(compressed_vout)
@@ -90,7 +91,10 @@ def locate_chainstate(testnet: bool) -> str:
     return os.path.join(datadir, 'chainstate')
 
 
-def dump_csv(conn: leveldb.LevelDB, secret: bytearray, writer: csv.writer):
+def dump_csv(conn: leveldb.LevelDB) -> None:
+    """Dump the data from a given connection."""
+    writer = csv.writer(sys.stdout)
+    secret = get_obfuscate_key(conn)
     writer.writerow(['txid', 'vout', 'height', 'coinbase', 'amount'])
     for k, v in conn.RangeIter(b'C', b'D', include_value=True):
         txid, vout = decode_key(k)
@@ -105,16 +109,17 @@ def main():
         '-t',
         '--testnet',
         action='store_true',
-        help='Testnet mode (ignored if --datadir is used)')
-    parser.add_argument('-d', '--datadir', help='Path to data directory')
+        help='Testnet mode (ignored if --chainstate-dir is used)')
+    parser.add_argument(
+        '-d',
+        '--chainstate-dir',
+        help='Path to chainstate directory directory')
     args = parser.parse_args()
 
-    conn = leveldb.LevelDB(args.datadir or locate_chainstate(args.testnet))
-    secret = get_obfuscate_key(conn)
-
-    writer = csv.writer(sys.stdout)
+    conn = leveldb.LevelDB(
+        args.chainstate_dir or locate_chainstate(args.testnet))
     try:
-        dump_csv(conn, secret, writer)
+        dump_csv(conn)
     except (IOError, KeyboardInterrupt):
         pass
 
