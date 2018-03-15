@@ -4,13 +4,33 @@
 # Dumps all fields except the script pub key.
 
 import argparse
-import csv
 import binascii
+import enum
+import csv
+import operator
 import os
 import sys
+
+from collections import defaultdict
 from typing import Tuple
 
 import leveldb
+
+
+class RowType(enum.Enum):
+
+    COIN = 'C'
+    COINS = 'c'
+    BLOCK_FILES = 'f'
+    TXINDEX = 't'
+    BLOCK_INDEX = 'b'
+    BEST_BLOCK = 'B'
+    HEAD_BLOCK = 'H'
+    FLAG = 'F'
+    REINDEX_FLAG = 'R'
+    LAST_BLOCK = 'l'
+    OBFUSCATE = '\x0e'
+
 
 # Prefix for coins.
 COIN = 67
@@ -74,52 +94,82 @@ def decode_key(key: bytearray) -> Tuple[str, int]:
     return txid, vout
 
 
-def decode_val(val: bytearray) -> Tuple[int, int, int]:
+def decode_val(val: bytearray) -> Tuple[int, int, int, int]:
     """Decode val to (height, coinbase, amount)."""
     code, consumed = decode_varint(val)
     coinbase = code & 1
     height = code >> 1
-    txval, _ = decode_varint(val[consumed:])
-    return height, coinbase, decompress_amount(txval)
+    txval, rem = decode_varint(val[consumed:])
+    return height, coinbase, decompress_amount(txval), len(val) - rem
 
 
-def locate_chainstate(testnet: bool) -> str:
+def locate_db(testnet: bool, name: str) -> str:
     """Guess where the chainstate directory is."""
     datadir = os.path.expanduser('~/.bitcoin')
     if testnet:
         datadir = os.path.join(datadir, 'testnet3')
-    return os.path.join(datadir, 'chainstate')
+    return os.path.join(datadir, name)
 
 
-def dump_csv(conn: leveldb.LevelDB) -> None:
-    """Dump the data from a given connection."""
-    writer = csv.writer(sys.stdout)
+def dump_chainstate_csv(conn: leveldb.LevelDB):
     secret = get_obfuscate_key(conn)
-    writer.writerow(['txid', 'vout', 'height', 'coinbase', 'amount'])
+    writer = csv.writer(sys.stdout)
+    writer.writerow(
+        ['txid', 'vout', 'height', 'coinbase', 'amount', 'scriptsize'])
     for k, v in conn.RangeIter(b'C', b'D', include_value=True):
         txid, vout = decode_key(k)
         decrypt(v, secret)
-        height, coinbase, amount = decode_val(v)
-        writer.writerow([txid, vout, height, coinbase, amount])
+        height, coinbase, amount, sz = decode_val(v)
+        writer.writerow([txid, vout, height, coinbase, amount, sz])
+
+
+def summarize(conn: leveldb.LevelDB):
+    counts = defaultdict(int)
+    for k, v in conn.RangeIter():
+        assert isinstance(k, bytearray)
+        kind = chr(k[0])
+        counts[kind] += 1
+
+    code_to_name = {t.value: t.name for t in RowType}
+    for k, v in sorted(
+            counts.items(), key=operator.itemgetter(1), reverse=True):
+        print('{:15s} {}'.format(code_to_name[k], v))
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        '-b',
+        '--blocks',
+        action='store_true',
+        help='Scan the block index (rather than chainstate)')
+    parser.add_argument(
         '-t',
         '--testnet',
         action='store_true',
-        help='Testnet mode (ignored if --chainstate-dir is used)')
+        help='Testnet mode (ignored if --datadir is used)')
     parser.add_argument(
-        '-d',
-        '--chainstate-dir',
-        help='Path to chainstate directory directory')
+        '-s',
+        '--summarize',
+        action='store_true',
+        help='Summarize information about key types')
+    parser.add_argument('-d', '--database', help='Path to database directory')
     args = parser.parse_args()
 
-    conn = leveldb.LevelDB(
-        args.chainstate_dir or locate_chainstate(args.testnet))
+    if args.database:
+        is_blocks = 'blocks/index' in args.dadatabase
+        conn = leveldb.LevelDB(args.database)
+    else:
+        is_blocks = args.blocks
+        db = locate_db(args.testnet, 'blocks/index'
+                       if args.blocks else 'chainstate')
+        conn = leveldb.LevelDB(db)
+
     try:
-        dump_csv(conn)
+        if is_blocks or args.summarize:
+            summarize(conn)
+        else:
+            dump_chainstate_csv(conn)
     except (IOError, KeyboardInterrupt):
         pass
 
