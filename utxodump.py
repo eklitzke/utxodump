@@ -157,7 +157,7 @@ def main():
     args = parser.parse_args()
 
     if args.database:
-        is_blocks = 'blocks/index' in args.dadatabase
+        is_blocks = 'blocks/index' in args.database
         conn = leveldb.LevelDB(args.database)
     else:
         is_blocks = args.blocks
